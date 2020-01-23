@@ -37,6 +37,9 @@ function aws-eks-configs() {
             --profile $aws_profile
     done
   done <<< $aws_profiles
+
+  # working around https://github.com/aws/aws-cli/issues/4675
+  sed -i.bak 's/command: aws$/command: aws2/g' ~/.kube/config
 }
 
 complete -C aws2_completer aws2
