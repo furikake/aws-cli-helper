@@ -1,0 +1,42 @@
+function aws-profiles() {
+  grep "\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort
+}
+
+function aws-sso-login() {
+  # pass in an optional profile name or default to npe environments
+  env=npe
+  [[ ! -z $1 ]] && env=$1
+
+  aws_profiles=$(aws-profiles | grep $env)
+
+  [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
+
+  while read aws_profile; do
+    echo -e "logging into \033[1m$aws_profile\033[0m"
+    aws2 sso login --profile $aws_profile
+    echo ""
+  done <<< $aws_profiles
+}
+
+function aws-eks-configs() {
+  # pass in an optional profile name or default to npe environments
+  env=npe
+  [[ ! -z $1 ]] && env=$1
+
+  aws_profiles=$(aws-profiles | grep $env)
+
+  [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
+
+  while read aws_profile; do
+    echo -e "checking for eks clusters in \033[1m$aws_profile\033[0m"
+
+    for eks_cluster in $(aws2 eks list-clusters --profile $aws_profile | jq -r '.clusters[]'); do
+      aws2 eks update-kubeconfig \
+            --name ${eks_cluster} \
+            --region=ap-southeast-2 \
+            --profile $aws_profile
+    done
+  done <<< $aws_profiles
+}
+
+complete -C aws2_completer aws2
