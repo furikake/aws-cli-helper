@@ -42,4 +42,8 @@ function aws-eks-configs() {
   sed -i.bak 's/command: aws$/command: aws2/g' ~/.kube/config
 }
 
+function aws-ecr-get-login() {
+  aws2 ecr get-login --no-include-email "$@"
+}
+
 complete -C aws2_completer aws2
