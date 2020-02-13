@@ -1,5 +1,17 @@
+# requirements
+# - aws cli v2
+# - gnu sed (assuming you're on MacOS with ancient version of BSD sed)
+# - jq
+
 function aws-profiles() {
-  grep "\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort
+  # test if sed is gnu sed
+  if [[ ! -z "$(sed --help 2>&1 | grep 'GNU')" ]]; then
+    grep "^\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort ; return ;
+  else
+    # try gsed
+    command -v gsed >/dev/null 2>&1 || { >&2 echo "Error: GNU sed not found" ; return 1 }
+    grep "^\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort
+  fi
 }
 
 function aws-sso-login() {
@@ -8,12 +20,23 @@ function aws-sso-login() {
   [[ ! -z $1 ]] && env=$1
 
   aws_profiles=$(aws-profiles | grep $env)
+  sso_logged_in_urls=""
 
   [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
 
   while read aws_profile; do
     echo -e "logging into \033[1m$aws_profile\033[0m"
-    aws sso login --profile $aws_profile
+
+    # get the sso_start_url for the profile and check if we need to login
+    sso_start_url=$(aws configure get sso_start_url --profile $aws_profile)
+
+    if [[ $sso_logged_in_urls == *"${sso_start_url} "* ]]; then
+      echo "no login required"
+    else
+      aws sso login --profile $aws_profile
+      sso_logged_in_urls="${sso_start_url} ${sso_logged_in_urls}"
+    fi
+
     echo ""
   done <<< $aws_profiles
 }
@@ -41,5 +64,5 @@ function aws-eks-configs() {
 }
 
 function aws-ecr-get-login() {
-  aws2 ecr get-login --no-include-email "$@"
+  aws ecr get-login --no-include-email "$@"
 }
