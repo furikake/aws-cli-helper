@@ -1,17 +1,9 @@
 # requirements
 # - aws cli v2
-# - gnu sed (assuming you're on MacOS with ancient version of BSD sed)
 # - jq
 
 function aws-profiles() {
-  # test if sed is gnu sed
-  if [[ ! -z "$(sed --help 2>&1 | grep 'GNU')" ]]; then
-    grep "^\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort ; return ;
-  else
-    # try gsed
-    command -v gsed >/dev/null 2>&1 || { >&2 echo "Error: GNU sed not found" ; return 1 }
-    grep "^\[profile" ~/.aws/config | gsed -r 's/^\[profile\s(.*)\]/\1/g' | sort
-  fi
+  grep "^\[profile" ~/.aws/config | awk '{print substr($2, 1, length($2)-1)}'
 }
 
 function aws-export-keys() {
@@ -51,11 +43,13 @@ function aws-export-keys() {
 }
 
 function aws-sso-login() {
-  # pass in an optional profile name or default to npe environments
-  env=npe
-  [[ ! -z $1 ]] && env=$1
 
-  aws_profiles=$(aws-profiles | grep $env)
+  if [[ -z "$1" ]]; then
+    echo "profile required"
+    return 1
+  fi
+
+  aws_profiles=$(aws-profiles | grep -i $1)
   sso_logged_in_urls=""
 
   [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
@@ -78,11 +72,13 @@ function aws-sso-login() {
 }
 
 function aws-eks-configs() {
-  # pass in an optional profile name or default to npe environments
-  env=npe
-  [[ ! -z $1 ]] && env=$1
 
-  aws_profiles=$(aws-profiles | grep $env)
+  if [[ -z "$1" ]]; then
+    echo "profile required"
+    return 1
+  fi
+
+  aws_profiles=$(aws-profiles | grep -i $1)
 
   [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
 
@@ -100,7 +96,19 @@ function aws-eks-configs() {
 }
 
 function aws-ecr-get-login() {
-  aws ecr get-login --no-include-email "$@"
+
+  if [[ -z "$1" ]]; then
+    echo "profile required"
+    return 1
+  fi
+
+  sso_account_id=$(aws configure get sso_account_id --profile $1)
+  sso_region=$(aws configure get sso_region --profile $1)
+  ecr_repo=${sso_account_id}.dkr.ecr.${sso_region}.amazonaws.com
+
+  echo -e "logging into \033[1m$ecr_repo\033[0m"
+ 
+  aws ecr get-login-password --profile $1 | docker login --username AWS --password-stdin ${sso_account_id}.dkr.ecr.${sso_region}.amazonaws.com
 }
 
 ###
@@ -112,4 +120,6 @@ function _aws-profile() {
 }
 
 compdef _aws-profile aws-export-keys
-
+compdef _aws-profile aws-sso-login
+compdef _aws-profile aws-eks-configs
+compdef _aws-profile aws-ecr-get-login
