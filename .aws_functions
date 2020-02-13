@@ -14,6 +14,42 @@ function aws-profiles() {
   fi
 }
 
+function aws-export-keys() {
+
+  profile=$1
+
+  if [[ -z "$profile" ]]; then
+    echo "profile required"
+    return 1
+  fi
+
+  sso_start_url=$(aws configure get sso_start_url --profile $profile)
+  sso_role_name=$(aws configure get sso_role_name --profile $profile)
+  sso_account_id=$(aws configure get sso_account_id --profile $profile)
+  sso_region=$(aws configure get sso_region --profile $profile)
+
+  # find token in cache
+  token_cache_file=$(grep -l \"$sso_start_url\" ~/.aws/sso/cache/*)
+  if [[ -z "$token_cache_file" ]]; then
+    # need to login
+    echo "you need to aws sso login first"
+    return 1
+  else
+    access_token=$(jq -r '.accessToken' < $token_cache_file)
+  fi
+
+  creds=$(aws sso get-role-credentials \
+    --profile $profile \
+    --role-name $sso_role_name \
+    --account-id $sso_account_id \
+    --region $sso_region \
+    --access-token $access_token)
+
+  export AWS_ACCESS_KEY_ID=$(jq -r '.roleCredentials.accessKeyId' <<< $creds)
+  export AWS_SECRET_ACCESS_KEY=$(jq -r '.roleCredentials.secretAccessKey' <<< $creds)
+  export AWS_SESSION_TOKEN=$(jq -r '.roleCredentials.sessionToken' <<< $creds)
+}
+
 function aws-sso-login() {
   # pass in an optional profile name or default to npe environments
   env=npe
@@ -66,3 +102,14 @@ function aws-eks-configs() {
 function aws-ecr-get-login() {
   aws ecr get-login --no-include-email "$@"
 }
+
+###
+# completion
+###
+
+function _aws-profile() {
+  compadd `aws-profiles`
+}
+
+compdef _aws-profile aws-export-keys
+
