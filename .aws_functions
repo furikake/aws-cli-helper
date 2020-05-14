@@ -1,6 +1,7 @@
 # requirements
 # - aws cli v2
 # - jq
+# - fzf
 
 function aws-profiles() {
   grep "^\[profile" ~/.aws/config | awk '{print substr($2, 1, length($2)-1)}'
@@ -8,7 +9,12 @@ function aws-profiles() {
 
 function aws-export-keys() {
 
-  profile=$1
+  if [ ! -x "$(which fzf 2>/dev/null)" ]; then
+    echo "please install: fzf (https://github.com/junegunn/fzf)" >&2
+    exit 1
+  fi
+
+  profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> ")
 
   if [[ -z "$profile" ]]; then
     echo "profile required"
@@ -124,4 +130,3 @@ compdef _aws-profile aws-export-keys
 compdef _aws-profile aws-sso-login
 compdef _aws-profile aws-eks-configs
 compdef _aws-profile aws-ecr-get-login
-
