@@ -9,14 +9,13 @@ function aws-profiles() {
 
 function aws-export-keys() {
 
-  if ! [ -x "$(command -v fzf)" ]; then
-    echo "please install: fzf (https://github.com/junegunn/fzf)" >&2
-    exit 1
-  fi
-
   if [[ -n "$profile" ]]; then
     profile=$1
   elif [[ -z "$profile" ]]; then
+    if ! [ -x "$(command -v fzf)" ]; then
+      echo "please install fzf to make your life easier: fzf (https://github.com/junegunn/fzf)" >&2
+      exit 1
+    fi
     profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> ")
   fi
 
