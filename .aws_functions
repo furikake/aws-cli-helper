@@ -1,6 +1,7 @@
 # requirements
 # - aws cli v2
 # - jq
+# - fzf
 
 function aws-profiles() {
   grep "^\[profile" ~/.aws/config | awk '{print substr($2, 1, length($2)-1)}'
@@ -8,10 +9,18 @@ function aws-profiles() {
 
 function aws-export-keys() {
 
-  profile=$1
+  if [[ -n "$profile" ]]; then
+    profile=$1
+  elif [[ -z "$profile" ]]; then
+    if ! [ -x "$(command -v fzf)" ]; then
+      echo "please install fzf to make your life easier: fzf (https://github.com/junegunn/fzf)" >&2
+      exit 1
+    fi
+    profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> ")
+  fi
 
   if [[ -z "$profile" ]]; then
-    echo "profile required"
+    echo "Specify an AWS Profile to cut the keys"
     return 1
   fi
 
