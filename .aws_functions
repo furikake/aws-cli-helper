@@ -4,19 +4,137 @@
 # - fzf
 
 function aws-profiles() {
-  grep "^\[profile" ~/.aws/config | awk '{print substr($2, 1, length($2)-1)}'
+  aws configure list-profiles | sort
+}
+
+function aws-profile-set() {
+  if [[ -n "$1" ]]; then
+    profile="$1"
+  elif [[ -z "$1" ]]; then
+    if ! [ -x "$(command -v fzf)" ]; then
+      echo "please install fzf to make your life easier: fzf (https://github.com/junegunn/fzf)" >&2
+      return 1
+    fi
+    profile=$(aws-profiles | fzf -0 -1 --tac -q "${1:-""}" --prompt "> ")
+  fi
+
+  if [[ -z "$profile" ]]; then
+    echo "Profile required"
+    return 1
+  fi
+
+  export AWS_PROFILE="$profile"
+}
+
+#####
+# Outputs "Name InstanceId"
+#####
+function aws-ec2-list-running() {
+  aws ec2 describe-instances \
+    --no-paginate \
+    --no-cli-pager \
+    --query 'Reservations[*].Instances[*].[Tags[?Key==`Name`] | [0].Value, Placement.AvailabilityZone, InstanceId ]' \
+    --filters 'Name=instance-state-name,Values=running' \
+    --output text | sort
+}
+
+function aws-ssm-send-ssh-public-key() {
+  # ssh_public_key="${HOME}/.ssh/id_ed25519.pub"
+  ssh_public_key="${HOME}/.ssh/id_rsa.pub"
+  selected="$(aws-ec2-list-running | fzf -0 -1 --tac -q "${1:-""}" --no-multi)"
+  if [[ -n "${selected}" ]]; then
+    instance_id="$(awk '{ print $3 }' <<< "${selected}")"
+    availability_zone="$(awk '{ print $2 }' <<< "${selected}")"
+
+    aws ec2-instance-connect send-ssh-public-key \
+      --instance-id "${instance_id}" \
+      --instance-os-user "ssm-user" \
+      --ssh-public-key "file://${ssh_public_key}" \
+      --availability-zone "${availability_zone}"
+  fi
+}
+
+function aws-ssm-start-session() {
+  instance_id="$(aws-ec2-list-running | fzf -0 -1 --tac -q "${1:-""}" --no-multi | awk '{ print $3 }' )"
+  if [[ -n "${instance_id}" ]]; then
+    aws ssm start-session --target "${instance_id}"
+  fi
+}
+
+#####
+# Gets a MFA'ed session and updates that in the your AWS config.
+# Expects to login with a profile called "login".
+# Will create a profile called "mfa" with your MFA'ed session.
+#####
+
+function aws-mfa-session() {
+
+  login_profile=login
+  mfa_profile=mfa
+
+  if [ -n "$1" ]; then
+    login_profile="$1"
+  fi
+
+  if [ -n "$2" ]; then
+    mfa_profile="$2"
+  fi
+
+  if [ ! -t 0 ]; then
+    echo Must be on a tty >&2
+    return 255
+  fi
+
+  identity=$(aws sts get-caller-identity --profile "$login_profile")
+
+  username=$(jq -r '.Arn' <<< "$identity" | cut -d'/' -f 2)
+  if [ -z "$username" ]; then
+    echo "Can not identify who you are" >&2
+    return 255
+  fi
+
+  mfa=$(aws iam list-mfa-devices --user-name "$username" --profile "$login_profile")
+
+  device=$(jq -r '.MFADevices[0].SerialNumber' <<< "$mfa")
+  if [ -z "$device" ]; then
+    echo "Can not find any MFA device for you." >&2
+    return 255
+  fi
+
+  echo -n "Enter your MFA code for ${device}: " >&2
+  read -r -s code
+  echo ""
+
+  creds=$(aws sts get-session-token --serial-number "$device" --token-code "$code" --profile "$login_profile")
+
+  access_key_id=$(jq -r '.Credentials.AccessKeyId' <<< "$creds")
+  secret_access_key=$(jq -r '.Credentials.SecretAccessKey' <<< "$creds")
+  session_token=$(jq -r '.Credentials.SessionToken' <<< "$creds")
+  expiration=$(jq -re '.Credentials.Expiration' <<< "$creds")
+
+  if [ -z "$access_key_id" ] || [ -z "$secret_access_key" ] || [ -z "$session_token" ]; then
+    echo "Unable to get session token" >&2
+    return 255
+  fi
+
+  aws configure set aws_access_key_id "$access_key_id" --profile "$mfa_profile"
+  aws configure set aws_secret_access_key "$secret_access_key" --profile "$mfa_profile"
+  aws configure set aws_session_token "$session_token" --profile "$mfa_profile"
+
+  echo "${mfa_profile} profile's session expire at ${expiration}\n"
 }
 
 function aws-export-keys() {
 
   if [[ -n "$profile" ]]; then
-    profile=$1
+    profile="$1"
   elif [[ -z "$profile" ]]; then
     if ! [ -x "$(command -v fzf)" ]; then
       echo "please install fzf to make your life easier: fzf (https://github.com/junegunn/fzf)" >&2
-      exit 1
+      return 1
     fi
-    profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> ")
+    # profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> ")
+    profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "> ")
   fi
 
   if [[ -z "$profile" ]]; then
@@ -24,32 +142,36 @@ function aws-export-keys() {
     return 1
   fi
 
-  sso_start_url=$(aws configure get sso_start_url --profile $profile)
-  sso_role_name=$(aws configure get sso_role_name --profile $profile)
-  sso_account_id=$(aws configure get sso_account_id --profile $profile)
-  sso_region=$(aws configure get sso_region --profile $profile)
+  sso_start_url=$(aws configure get sso_start_url --profile "$profile")
+  sso_role_name=$(aws configure get sso_role_name --profile "$profile")
+  sso_account_id=$(aws configure get sso_account_id --profile "$profile")
+  sso_region=$(aws configure get sso_region --profile "$profile")
 
   # find token in cache
-  token_cache_file=$(grep -l \"$sso_start_url\" ~/.aws/sso/cache/*)
+  token_cache_file=$(grep -l \""$sso_start_url"\" "${HOME}/.aws/sso/cache/*")
   if [[ -z "$token_cache_file" ]]; then
     # need to login
     echo "you need to aws sso login first"
     return 1
   else
-    access_token=$(jq -r '.accessToken' < $token_cache_file)
+    access_token=$(jq -r '.accessToken' < "$token_cache_file")
   fi
 
   creds=$(aws sso get-role-credentials \
-    --profile $profile \
-    --role-name $sso_role_name \
-    --account-id $sso_account_id \
-    --region $sso_region \
-    --access-token $access_token)
+    --profile "$profile" \
+    --role-name "$sso_role_name" \
+    --account-id "$sso_account_id" \
+    --region "$sso_region" \
+    --access-token "$access_token")
 
-  export AWS_ACCESS_KEY_ID=$(jq -r '.roleCredentials.accessKeyId' <<< $creds)
-  export AWS_SECRET_ACCESS_KEY=$(jq -r '.roleCredentials.secretAccessKey' <<< $creds)
-  export AWS_SESSION_TOKEN=$(jq -r '.roleCredentials.sessionToken' <<< $creds)
-  export AWS_DEFAULT_REGION=$sso_region
+  access_key_id=$(jq -r '.roleCredentials.accessKeyId' <<< "$creds")
+  secret_access_key=$(jq -r '.roleCredentials.secretAccessKey' <<< "$creds")
+  session_token=$(jq -r '.roleCredentials.sessionToken' <<< "$creds")
+
+  export AWS_ACCESS_KEY_ID="$access_key_id"
+  export AWS_SECRET_ACCESS_KEY="$secret_access_key"
+  export AWS_SESSION_TOKEN="$session_token"
+  export AWS_DEFAULT_REGION="$sso_region"
 }
 
 function aws-sso-login() {
@@ -59,49 +181,68 @@ function aws-sso-login() {
     return 1
   fi
 
-  aws_profiles=$(aws-profiles | grep -i $1)
+  aws_profiles=$(aws-profiles | grep -i "$1")
   sso_logged_in_urls=""
 
   [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
 
-  while read aws_profile; do
+  while read -r aws_profile; do
     echo -e "logging into \033[1m$aws_profile\033[0m"
 
     # get the sso_start_url for the profile and check if we need to login
-    sso_start_url=$(aws configure get sso_start_url --profile $aws_profile)
+    sso_start_url=$(aws configure get sso_start_url --profile "$aws_profile")
 
     if [[ $sso_logged_in_urls == *"${sso_start_url} "* ]]; then
       echo "no login required"
     else
-      aws sso login --profile $aws_profile
+      aws sso login --profile "$aws_profile"
       sso_logged_in_urls="${sso_start_url} ${sso_logged_in_urls}"
     fi
 
     echo ""
-  done <<< $aws_profiles
+  done <<< "$aws_profiles"
 }
 
 function aws-eks-configs() {
 
-  if [[ -z "$1" ]]; then
-    echo "profile required"
+  # use provided profile or profile prefix
+  if [[ -n "$1" ]]; then
+    profile="$1"
+  
+  # if no profile provided then try the AWS_PROFILE environment variable
+  elif [[ -n "$AWS_PROFILE" ]]; then
+      profile="$AWS_PROFILE"
+
+  # if there's still nothing, then select one
+  elif [[ -z "$1" ]]; then
+
+    if ! [ -x "$(command -v fzf)" ]; then
+      echo "please install fzf to make your life easier: fzf (https://github.com/junegunn/fzf)" >&2
+      return 1
+    fi
+    profile=$(aws-profiles |  fzf -0 -1 --tac -q "${1:-""}" --prompt "> ")
+  fi
+
+  if [[ -z "$profile" ]]; then
+    echo "Profile required"
     return 1
   fi
 
-  aws_profiles=$(aws-profiles | grep -i $1)
+  aws_profiles=$(aws-profiles | grep -i "$profile")
 
   [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
 
-  while read aws_profile; do
+  while read -r aws_profile; do
     echo -e "checking for eks clusters in \033[1m$aws_profile\033[0m"
 
-    for eks_cluster in $(aws eks list-clusters --profile $aws_profile | jq -r '.clusters[]'); do
+    for eks_cluster in $(aws eks list-clusters --profile "$aws_profile" | jq -r '.clusters[]'); do
+      region=$(aws configure get region --profile "$aws_profile")
       aws eks update-kubeconfig \
-            --name ${eks_cluster} \
-            --region=ap-southeast-2 \
-            --profile $aws_profile
+            --name "$eks_cluster" \
+            --region="$region" \
+            --profile "$aws_profile"
     done
-  done <<< $aws_profiles
+  done <<< "$aws_profiles"
 
 }
 
@@ -112,13 +253,13 @@ function aws-ecr-get-login() {
     return 1
   fi
 
-  sso_account_id=$(aws configure get sso_account_id --profile $1)
-  sso_region=$(aws configure get sso_region --profile $1)
+  sso_account_id=$(aws configure get sso_account_id --profile "$1")
+  sso_region=$(aws configure get sso_region --profile "$1")
   ecr_repo=${sso_account_id}.dkr.ecr.${sso_region}.amazonaws.com
 
   echo -e "logging into \033[1m$ecr_repo\033[0m"
  
-  aws ecr get-login-password --profile $1 | docker login --username AWS --password-stdin ${sso_account_id}.dkr.ecr.${sso_region}.amazonaws.com
+  aws ecr get-login-password --profile "$1" | docker login --username AWS --password-stdin "${sso_account_id}.dkr.ecr.${sso_region}.amazonaws.com"
 }
 
 ###
@@ -126,10 +267,12 @@ function aws-ecr-get-login() {
 ###
 
 function _aws-profile() {
-  compadd `aws-profiles`
+  # shellcheck disable=SC2046
+  compadd $(aws-profiles)
 }
 
-compdef _aws-profile aws-export-keys
-compdef _aws-profile aws-sso-login
-compdef _aws-profile aws-eks-configs
 compdef _aws-profile aws-ecr-get-login
+compdef _aws-profile aws-eks-configs
+compdef _aws-profile aws-export-keys
+compdef _aws-profile aws-profile-set
+compdef _aws-profile aws-sso-login
