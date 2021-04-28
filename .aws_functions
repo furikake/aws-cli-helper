@@ -176,15 +176,18 @@ function aws-export-keys() {
 
 function aws-sso-login() {
 
-  if [[ -z "$1" ]]; then
-    echo "profile required"
-    return 1
+  # use provided account prefix or environment variable or select the account
+  if [[ -n "$1" ]]; then
+    profile_prefix="$1"
+    aws_profiles=$(aws-profiles | grep -i "$profile_prefix")
+    [[ -z "$aws_profiles" ]] && echo "no matching profiles for $1"
+  elif [[ -n "${AWS_PROFILE}" ]]; then
+    aws_profiles="${AWS_PROFILE}"
+  else
+    aws_profiles=$(aws-profiles | fzf -0 -1 --tac -q "${1:-""}" --prompt "> ")
   fi
 
-  aws_profiles=$(aws-profiles | grep -i "$1")
   sso_logged_in_urls=""
-
-  [[ -z $aws_profiles ]] && echo "no matching profiles for $1"
 
   while read -r aws_profile; do
     echo -e "logging into \033[1m$aws_profile\033[0m"
