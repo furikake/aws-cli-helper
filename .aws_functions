@@ -148,7 +148,7 @@ function aws-export-keys() {
   sso_region=$(aws configure get sso_region --profile "$profile")
 
   # find token in cache
-  token_cache_file=$(grep -l \""$sso_start_url"\" "${HOME}/.aws/sso/cache/*")
+  token_cache_file=$(grep -l \""$sso_start_url"\" ${HOME}/.aws/sso/cache/*)
   if [[ -z "$token_cache_file" ]]; then
     # need to login
     echo "you need to aws sso login first"
